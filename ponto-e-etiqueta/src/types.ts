@@ -2,19 +2,37 @@ export type FormaPagamento = 'PIX' | 'Dinheiro';
 
 export type DataCompat = Date | { toDate: () => Date };
 
+export interface Cliente {
+  id?: string;
+  nome: string;
+  telefone?: string;
+  telefoneDigitos?: string;
+  observacoes?: string;
+  criadoEm?: DataCompat;
+  atualizadoEm?: DataCompat;
+}
+
 export interface Venda {
   id?: string;
   nomeCliente: string;
+  clienteId?: string;
   produto?: string;
   descricaoPeca: string;
   valor: number;
+  valorTotalCompra?: number;
+  valorRecebido?: number;
+  valorAindaPagar?: number;
   precoVenda?: number;
   custoProducao?: number;
   ingredientes?: string[];
   quantidadeVendida?: number;
+  quantidadePecas?: number;
+  pecas?: string[];
+  itens?: Array<{ descricao: string; quantidade: number }>;
   lucroCalculado?: number;
   formaPagamento: FormaPagamento;
   quantidadeParcelas: number;
+  dataCompra?: DataCompat;
   dataRecebimento: DataCompat;
   dataRegistro?: DataCompat;
 }
