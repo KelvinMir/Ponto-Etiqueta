@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from 'react';
 import { formatarMoeda } from '../AI/finance';
-import { observarClientes, salvarCliente, atualizarPagamentoVenda } from '../vendasService';
+import { atualizarCliente, atualizarPagamentoVenda, excluirCliente, extrairDigitosTelefone, formatarTelefoneCliente, observarClientes, salvarCliente, telefoneCelularValido } from '../vendasService';
 import { type Cliente, type FormaPagamento, type Venda } from '../types';
 
 interface SalesPanelProps {
@@ -49,30 +49,63 @@ const formatarDataInput = (data: Venda['dataRecebimento'] | undefined) => {
   return '';
 };
 
+const normalizarBusca = (valor: string) =>
+  valor
+    .trim()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+const atualizarClienteNaLista = (lista: Cliente[], clienteAtualizado: Cliente) => {
+  const semDuplicar = lista.filter((cliente) => cliente.id !== clienteAtualizado.id);
+  return [...semDuplicar, clienteAtualizado].sort((clienteA, clienteB) =>
+    clienteA.nome.localeCompare(clienteB.nome, 'pt-BR', { sensitivity: 'base' })
+  );
+};
+
 export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
   const [form, setForm] = useState<FormState>(initialForm);
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [clienteBusca, setClienteBusca] = useState('');
+  const [clienteBuscaDebounced, setClienteBuscaDebounced] = useState('');
   const [clienteSelecionado, setClienteSelecionado] = useState<Cliente | null>(null);
   const [clienteForm, setClienteForm] = useState({ nome: '', telefone: '', observacoes: '' });
-  const [clienteSaving, setClienteSaving] = useState(false);
   const [clienteErro, setClienteErro] = useState('');
+  const [clienteEditando, setClienteEditando] = useState<Cliente | null>(null);
+  const [clienteExcluindo, setClienteExcluindo] = useState<Cliente | null>(null);
+  const [clienteModalSaving, setClienteModalSaving] = useState(false);
+  const [clienteModalErro, setClienteModalErro] = useState('');
+  const [clienteCadastroPendente, setClienteCadastroPendente] = useState<{ nome: string; telefone: string; observacoes: string } | null>(null);
+  const [clienteEdicaoPendente, setClienteEdicaoPendente] = useState<{ cliente: Cliente; dados: { nome: string; telefone: string; observacoes: string } } | null>(null);
   const [saving, setSaving] = useState(false);
+  const clienteActionInFlight = useRef(false);
   const [erro, setErro] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pagamentos, setPagamentos] = useState<Record<string, { valorRecebido: string; dataRecebimento: string }>>({});
 
   useEffect(() => {
     const unsubscribe = observarClientes(
-      (clientesAtualizados) => setClientes(clientesAtualizados),
+      (clientesAtualizados) => {
+        setClientes(clientesAtualizados);
+        setClienteErro('');
+      },
       () => setClienteErro('Não foi possível carregar os clientes cadastrados.')
     );
 
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setClienteBuscaDebounced(clienteBusca);
+    }, 500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [clienteBusca]);
+
   const clientesFiltrados = useMemo(() => {
-    const busca = clienteBusca.trim().toLowerCase();
+    const busca = normalizarBusca(clienteBuscaDebounced);
+    const buscaDigitos = extrairDigitosTelefone(clienteBuscaDebounced);
 
     if (!busca) {
       return clientes.slice(0, 6);
@@ -80,13 +113,13 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
 
     return clientes
       .filter((cliente) => {
-        const nome = cliente.nome?.toLowerCase() ?? '';
-        const telefone = cliente.telefone?.toLowerCase() ?? '';
-        const observacoes = cliente.observacoes?.toLowerCase() ?? '';
-        return nome.includes(busca) || telefone.includes(busca) || observacoes.includes(busca);
+        const nome = normalizarBusca(cliente.nome ?? '');
+        const telefone = extrairDigitosTelefone(cliente.telefone ?? cliente.telefoneDigitos ?? '');
+        const observacoes = normalizarBusca(cliente.observacoes ?? '');
+        return nome.includes(busca) || observacoes.includes(busca) || Boolean(buscaDigitos && telefone.includes(buscaDigitos));
       })
       .slice(0, 6);
-  }, [clienteBusca, clientes]);
+  }, [clienteBuscaDebounced, clientes]);
 
   const atualizarCampo = (campo: keyof FormState, valor: string | number) => {
     setForm((current) => ({ ...current, [campo]: valor }));
@@ -111,12 +144,116 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
   };
 
   const clientePronto = Boolean(clienteSelecionado);
+  const itensProntos = clientePronto && form.itens.some((item) => item.descricao.trim() && Number(item.quantidade) >= 1);
+  const pagamentoPronto = itensProntos && Number(form.valorTotalCompra) > 0 && Boolean(form.dataVenda);
 
   const selecionarCliente = (cliente: Cliente) => {
     setClienteBusca(cliente.nome);
     setClienteSelecionado(cliente);
     setForm((current) => ({ ...current, nomeCliente: cliente.nome }));
     setErro('');
+  };
+
+  const abrirEdicaoCliente = (cliente: Cliente) => {
+    setClienteModalErro('');
+    setClienteForm({ nome: cliente.nome, telefone: cliente.telefone ?? '', observacoes: cliente.observacoes ?? '' });
+    setClienteEditando(cliente);
+  };
+
+  const fecharEdicaoCliente = () => {
+    if (clienteModalSaving) return;
+    setClienteEditando(null);
+    setClienteModalErro('');
+  };
+
+  const handleEditarCliente = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!clienteEditando?.id) return;
+
+    if (!clienteForm.nome.trim() || !telefoneCelularValido(clienteForm.telefone)) {
+      setClienteModalErro('Informe o nome e um celular válido com DDD e 11 dígitos.');
+      return;
+    }
+
+    setClienteModalErro('');
+    setClienteEdicaoPendente({ cliente: clienteEditando, dados: { ...clienteForm } });
+  };
+
+  const confirmarEdicaoCliente = async () => {
+    if (!clienteEdicaoPendente?.cliente.id || clienteActionInFlight.current) return;
+
+    try {
+      clienteActionInFlight.current = true;
+      setClienteModalSaving(true);
+      const clienteAtualizado = await atualizarCliente(clienteEdicaoPendente.cliente.id, clienteEdicaoPendente.dados);
+      setClientes((current) => atualizarClienteNaLista(
+        current.filter((cliente) => cliente.id !== clienteEdicaoPendente.cliente.id),
+        clienteAtualizado
+      ));
+      if (clienteSelecionado?.id === clienteEdicaoPendente.cliente.id) {
+        setClienteSelecionado(clienteAtualizado);
+        setClienteBusca(clienteAtualizado.nome);
+        setForm((current) => ({ ...current, nomeCliente: clienteAtualizado.nome }));
+      }
+      setClienteEdicaoPendente(null);
+      setClienteEditando(null);
+      setClienteModalErro('');
+    } catch (error) {
+      setClienteModalErro(error instanceof Error ? error.message : 'Não foi possível editar o cliente. Tente novamente.');
+    } finally {
+      clienteActionInFlight.current = false;
+      setClienteModalSaving(false);
+    }
+  };
+
+  const confirmarCadastroCliente = async () => {
+    if (!clienteCadastroPendente || clienteActionInFlight.current) return;
+
+    try {
+      clienteActionInFlight.current = true;
+      setClienteModalSaving(true);
+      const clienteSalvo = await salvarCliente(clienteCadastroPendente);
+      setClientes((current) => atualizarClienteNaLista(current, clienteSalvo));
+      setClienteForm({ nome: '', telefone: '', observacoes: '' });
+      setClienteCadastroPendente(null);
+      setClienteBusca(clienteSalvo.nome);
+      setClienteSelecionado({
+        id: clienteSalvo.id,
+        nome: clienteSalvo.nome,
+        telefone: clienteSalvo.telefone,
+        telefoneDigitos: clienteSalvo.telefoneDigitos,
+        observacoes: clienteSalvo.observacoes,
+      });
+      setForm((current) => ({ ...current, nomeCliente: clienteSalvo.nome }));
+      setClienteErro('');
+    } catch (error) {
+      setClienteModalErro(error instanceof Error ? error.message : 'Não foi possível salvar o cliente. Tente novamente.');
+    } finally {
+      clienteActionInFlight.current = false;
+      setClienteModalSaving(false);
+    }
+  };
+
+  const handleExcluirCliente = async () => {
+    if (!clienteExcluindo?.id || clienteActionInFlight.current) return;
+
+    try {
+      clienteActionInFlight.current = true;
+      setClienteModalSaving(true);
+      await excluirCliente(clienteExcluindo.id);
+      setClientes((current) => current.filter((cliente) => cliente.id !== clienteExcluindo.id));
+      if (clienteSelecionado?.id === clienteExcluindo.id) {
+        setClienteSelecionado(null);
+        setForm((current) => ({ ...current, nomeCliente: '' }));
+      }
+      setClienteExcluindo(null);
+      setClienteModalErro('');
+    } catch (error) {
+      setClienteModalErro(error instanceof Error ? error.message : 'Não foi possível excluir o cliente. Tente novamente.');
+    } finally {
+      clienteActionInFlight.current = false;
+      setClienteModalSaving(false);
+    }
   };
 
   const handleClienteSubmit = async (event: FormEvent) => {
@@ -129,30 +266,12 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
       return;
     }
 
-    try {
-      setClienteSaving(true);
-      const clienteSalvo = await salvarCliente({
-        nome,
-        telefone: clienteForm.telefone,
-        observacoes: clienteForm.observacoes,
-      });
-
-      setClienteForm({ nome: '', telefone: '', observacoes: '' });
-      setClienteBusca(clienteSalvo.nome);
-      setClienteSelecionado({
-        id: clienteSalvo.id,
-        nome: clienteSalvo.nome,
-        telefone: clienteSalvo.telefone,
-        telefoneDigitos: clienteSalvo.telefoneDigitos,
-        observacoes: clienteSalvo.observacoes,
-      });
-      setForm((current) => ({ ...current, nomeCliente: clienteSalvo.nome }));
-    } catch (error) {
-      console.error(error);
-      setClienteErro(error instanceof Error ? error.message : 'Não foi possível salvar o cliente. Tente novamente.');
-    } finally {
-      setClienteSaving(false);
+    if (!telefoneCelularValido(clienteForm.telefone)) {
+      setClienteErro('Informe um celular válido com DDD e 11 dígitos.');
+      return;
     }
+
+    setClienteCadastroPendente({ ...clienteForm, nome });
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -206,6 +325,7 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
         lucroCalculado: valorTotalCompra,
         formaPagamento: form.formaPagamento,
         quantidadeParcelas: 1,
+        clienteId: clienteSelecionado?.id,
         dataCompra: new Date(form.dataVenda),
         dataRecebimento: new Date(form.dataRecebimento || form.dataVenda),
       });
@@ -271,17 +391,20 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
               <ul className="rounded-2xl border border-stone-100 bg-stone-50 p-2">
                 {clientesFiltrados.map((cliente) => (
                   <li key={cliente.id ?? cliente.telefoneDigitos ?? cliente.nome}>
-                    <button
-                      type="button"
-                      onClick={() => selecionarCliente(cliente)}
-                      className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-white"
-                    >
-                      <span>
-                        <span className="block text-sm font-semibold text-stone-800">{cliente.nome}</span>
+                    <div className="flex items-center gap-2 rounded-xl px-3 py-2 transition hover:bg-white">
+                      <button type="button" onClick={() => selecionarCliente(cliente)} className="min-w-0 flex-1 text-left">
+                        <span className="block truncate text-sm font-semibold text-stone-800">{cliente.nome}</span>
                         {cliente.telefone ? <span className="mt-1 block text-xs text-stone-500">{cliente.telefone}</span> : null}
-                      </span>
-                      <span className="text-xs font-medium text-rose-500">Selecionar</span>
-                    </button>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button type="button" onClick={() => abrirEdicaoCliente(cliente)} className="rounded-lg p-2 text-stone-500 hover:bg-stone-100 hover:text-stone-900" aria-label={`Editar ${cliente.nome}`} title="Editar cliente">
+                          <PencilIcon />
+                        </button>
+                        <button type="button" onClick={() => { setClienteModalErro(''); setClienteExcluindo(cliente); }} className="rounded-lg p-2 text-stone-500 hover:bg-red-50 hover:text-red-600" aria-label={`Excluir ${cliente.nome}`} title="Excluir cliente">
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -313,9 +436,10 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
                   <input
                     type="tel"
                     value={clienteForm.telefone}
-                    onChange={(event) => setClienteForm((current) => ({ ...current, telefone: event.target.value }))}
+                    inputMode="numeric"
+                    onChange={(event) => setClienteForm((current) => ({ ...current, telefone: formatarTelefoneCliente(event.target.value) }))}
                     className={inputClass}
-                    placeholder="(11) 99999-0000"
+                    placeholder="(11) 9 9999-0000"
                   />
                 </div>
                 <div>
@@ -330,10 +454,10 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
                 </div>
                 <button
                   type="submit"
-                  disabled={clienteSaving}
+                  disabled={clienteModalSaving}
                   className="md:col-span-2 rounded-2xl bg-stone-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
                 >
-                  {clienteSaving ? 'Salvando...' : 'Salvar cliente'}
+                  Salvar cliente
                 </button>
               </form>
             </div>
@@ -346,15 +470,9 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
               </p>
             ) : null}
 
-            {!clientePronto ? (
-              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                Finalize a pesquisa ou o cadastro do cliente para registrar a compra.
-              </div>
-            ) : null}
-
-            <div className="rounded-3xl border border-stone-100 bg-stone-50 p-4">
+            <fieldset disabled={!clientePronto} className="rounded-3xl border border-stone-100 bg-stone-50 p-4 disabled:opacity-50">
               <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-stone-800">
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-100 text-rose-600">2</span>
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-100 text-rose-600">1</span>
                 Itens da compra
               </div>
 
@@ -401,12 +519,18 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
               >
                 Adicionar outra peça
               </button>
-            </div>
+            </fieldset>
 
-            <div className="rounded-3xl border border-stone-100 bg-stone-50 p-4">
+            {!itensProntos && clientePronto ? (
+              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                2. Adicione ao menos um item vendido para liberar o pagamento.
+              </div>
+            ) : null}
+
+            <fieldset disabled={!itensProntos} className="rounded-3xl border border-stone-100 bg-stone-50 p-4 disabled:opacity-50">
               <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-stone-800">
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-100 text-rose-600">3</span>
-                Valor e data
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-100 text-rose-600">2</span>
+                Pagamento
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
@@ -452,14 +576,20 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
                   />
                 </div>
               </div>
-            </div>
+            </fieldset>
+
+            {itensProntos && !pagamentoPronto ? (
+              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                3. Informe o valor total e a data da venda para concluir.
+              </div>
+            ) : null}
 
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || !pagamentoPronto}
               className="w-full rounded-2xl bg-stone-900 px-4 py-3.5 text-sm font-semibold text-white shadow-lg shadow-stone-200 transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
             >
-              {saving ? 'Registrando...' : 'Registrar venda'}
+              {saving ? 'Registrando...' : 'Nova venda'}
             </button>
           </form>
         </section>
@@ -482,9 +612,91 @@ export function SalesPanel({ vendas, onRegistrarVenda }: SalesPanelProps) {
           />
         </section>
       </div>
+
+      {clienteEditando ? (
+        <Modal title="Editar cliente" onClose={fecharEdicaoCliente}>
+          <form onSubmit={handleEditarCliente} className="space-y-4">
+            <ClienteFields clienteForm={clienteForm} setClienteForm={setClienteForm} />
+            {clienteModalErro ? <p className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700" role="alert">{clienteModalErro}</p> : null}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={fecharEdicaoCliente} className="rounded-2xl border border-stone-200 px-4 py-3 text-sm font-semibold text-stone-600">Cancelar</button>
+              <button type="submit" disabled={clienteModalSaving} className="rounded-2xl bg-stone-900 px-4 py-3 text-sm font-semibold text-white disabled:bg-stone-400">{clienteModalSaving ? 'Salvando...' : 'Salvar alterações'}</button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {clienteExcluindo ? (
+        <Modal title="Excluir cliente" onClose={() => !clienteModalSaving && setClienteExcluindo(null)}>
+          <p className="text-sm leading-6 text-stone-600">Tem certeza que deseja excluir <strong className="text-stone-900">{clienteExcluindo.nome}</strong>? Esta ação não poderá ser desfeita.</p>
+          {clienteModalErro ? <p className="mt-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700" role="alert">{clienteModalErro}</p> : null}
+          <div className="mt-6 flex justify-end gap-2">
+            <button type="button" onClick={() => setClienteExcluindo(null)} disabled={clienteModalSaving} className="rounded-2xl border border-stone-200 px-4 py-3 text-sm font-semibold text-stone-600">Cancelar</button>
+            <button type="button" onClick={handleExcluirCliente} disabled={clienteModalSaving} className="rounded-2xl bg-red-600 px-4 py-3 text-sm font-semibold text-white disabled:bg-red-300">{clienteModalSaving ? 'Excluindo...' : 'Excluir cliente'}</button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {clienteCadastroPendente ? (
+        <Modal title="Confirmar cadastro" onClose={() => !clienteModalSaving && setClienteCadastroPendente(null)}>
+          <p className="text-sm leading-6 text-stone-600">Confirma o cadastro de <strong className="text-stone-900">{clienteCadastroPendente.nome}</strong>?</p>
+          {clienteModalErro ? <p className="mt-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700" role="alert">{clienteModalErro}</p> : null}
+          <div className="mt-6 flex justify-end gap-2">
+            <button type="button" onClick={() => setClienteCadastroPendente(null)} disabled={clienteModalSaving} className="rounded-2xl border border-stone-200 px-4 py-3 text-sm font-semibold text-stone-600">Cancelar</button>
+            <button type="button" onClick={confirmarCadastroCliente} disabled={clienteModalSaving} className="rounded-2xl bg-stone-900 px-4 py-3 text-sm font-semibold text-white disabled:bg-stone-400">Confirmar cadastro</button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {clienteEdicaoPendente ? (
+        <Modal title="Confirmar alterações" onClose={() => !clienteModalSaving && setClienteEdicaoPendente(null)}>
+          <p className="text-sm leading-6 text-stone-600">Confirma as alterações do cliente <strong className="text-stone-900">{clienteEdicaoPendente.dados.nome}</strong>?</p>
+          <div className="mt-6 flex justify-end gap-2">
+            <button type="button" onClick={() => setClienteEdicaoPendente(null)} disabled={clienteModalSaving} className="rounded-2xl border border-stone-200 px-4 py-3 text-sm font-semibold text-stone-600">Cancelar</button>
+            <button type="button" onClick={confirmarEdicaoCliente} disabled={clienteModalSaving} className="rounded-2xl bg-stone-900 px-4 py-3 text-sm font-semibold text-white disabled:bg-stone-400">Confirmar alterações</button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {clienteModalSaving ? <LoadingModal /> : null}
     </div>
   );
 }
+
+function ClienteFields({ clienteForm, setClienteForm }: { clienteForm: { nome: string; telefone: string; observacoes: string }; setClienteForm: Dispatch<SetStateAction<{ nome: string; telefone: string; observacoes: string }>> }) {
+  return (
+    <>
+      <div><label className={labelClass}>Nome</label><input type="text" value={clienteForm.nome} onChange={(event) => setClienteForm((current) => ({ ...current, nome: event.target.value }))} className={inputClass} /></div>
+      <div><label className={labelClass}>Telefone</label><input type="tel" inputMode="numeric" value={clienteForm.telefone} onChange={(event) => setClienteForm((current) => ({ ...current, telefone: formatarTelefoneCliente(event.target.value) }))} className={inputClass} placeholder="(11) 9 9999-0000" /></div>
+      <div><label className={labelClass}>Observações</label><input type="text" value={clienteForm.observacoes} onChange={(event) => setClienteForm((current) => ({ ...current, observacoes: event.target.value }))} className={inputClass} /></div>
+    </>
+  );
+}
+
+function LoadingModal() {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-stone-900/45 p-4" role="alertdialog" aria-modal="true" aria-label="Processando">
+      <div className="flex items-center gap-3 rounded-2xl bg-white px-5 py-4 text-sm font-semibold text-stone-800 shadow-2xl">
+        <span className="h-5 w-5 animate-spin rounded-full border-2 border-stone-200 border-t-stone-900" aria-hidden="true" />
+        Processando, aguarde...
+      </div>
+    </div>
+  );
+}
+
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/40 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="cliente-modal-title">
+        <div className="mb-5 flex items-center justify-between gap-4"><h3 id="cliente-modal-title" className="text-lg font-semibold text-stone-900">{title}</h3><button type="button" onClick={onClose} className="rounded-lg p-2 text-xl leading-none text-stone-400 hover:bg-stone-100 hover:text-stone-700" aria-label="Fechar">×</button></div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PencilIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4 fill-none stroke-current" strokeWidth="1.8"><path d="m4 16.5-.8 3.8 3.8-.8L18.5 8a2.7 2.7 0 0 0-3.8-3.8L4 16.5Z" /><path d="m13.5 5.5 5 5" /></svg>; }
+function TrashIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4 fill-none stroke-current" strokeWidth="1.8"><path d="M4 7h16M10 11v6m4-6v6M9 7V4h6v3m-9 0 1 13h8l1-13" /></svg>; }
 
 function SalesList({
   vendas,

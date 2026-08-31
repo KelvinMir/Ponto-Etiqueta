@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import heroImage from './assets/hero.png';
+import logo from './logo.png';
 import { AiAssistantScreen } from './AI/aiAssistantScreen';
 import { SalesPanel } from './components/SalesPanel';
 import { adicionarVenda, observarVendas } from './vendasService';
@@ -31,15 +31,15 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(244,114,182,0.16),_transparent_32%),linear-gradient(135deg,_#fffaf7_0%,_#fdf2f8_100%)] px-3 py-4 text-stone-700 sm:px-5 lg:px-6">
       <div className="mx-auto flex max-w-6xl flex-col gap-4">
-        <header className="rounded-[32px] border border-stone-200/80 bg-white/80 p-4 shadow-[0_20px_60px_-24px_rgba(120,53,15,0.35)] backdrop-blur-sm sm:p-6">
+        <header className="rounded-4xl border border-stone-200/80 bg-white/80 p-4 shadow-[0_20px_60px_-24px_rgba(120,53,15,0.35)] backdrop-blur-sm sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-stone-900 text-lg font-semibold text-white">
-                <img src={heroImage} alt="" className="h-8 w-8 object-contain" />
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl text-lg font-semibold text-white">
+                <img src={logo} alt="Logo" className="h-14 w-14 object-contain" />
               </div>
               <div>
                 <h1 className="m-0 text-2xl font-semibold tracking-tight text-stone-900">Ponto & Etiqueta</h1>
-                <p className="mt-1 text-sm text-stone-500">Gestão de clientes, compras e recebimentos</p>
+                <p className="mt-1 text-sm text-stone-500">Gestão de clientes</p>
               </div>
             </div>
 
