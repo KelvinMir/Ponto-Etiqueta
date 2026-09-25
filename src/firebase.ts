@@ -14,11 +14,9 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-// Os logs detalhados mostram no console o RPC do Firestore, incluindo a operação
-// e eventuais respostas/erros recebidos. Em produção, mantemos apenas o padrão.
 setLogLevel(import.meta.env.DEV ? "debug" : "error");
 export const analytics = typeof window !== "undefined" ? getAnalytics(app) : undefined;
 export const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
+  experimentalForceLongPolling: true,
   localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
 });

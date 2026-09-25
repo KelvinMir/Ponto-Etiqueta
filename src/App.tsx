@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import logo from './logo.png';
 import { AiAssistantScreen } from './AI/aiAssistantScreen';
 import { SalesPanel } from './components/SalesPanel';
+import { AnalyticsPanel } from './components/AnalyticsPanel';
 import { adicionarVenda, observarVendas } from './vendasService';
 import { type Venda } from './types';
 
-type TelaAtiva = 'vendas' | 'assistente';
+type TelaAtiva = 'vendas' | 'analises' | 'assistente';
 
 export default function App() {
   const [vendas, setVendas] = useState<Venda[]>([]);
@@ -43,7 +44,7 @@ export default function App() {
               </div>
             </div>
 
-            <nav className="grid grid-cols-2 gap-2 rounded-2xl border border-stone-100 bg-stone-50 p-1.5 shadow-inner">
+            <nav className="grid grid-cols-3 gap-2 rounded-2xl border border-stone-100 bg-stone-50 p-1.5 shadow-inner">
               <button
                 type="button"
                 onClick={() => setTelaAtiva('vendas')}
@@ -52,6 +53,15 @@ export default function App() {
                 }`}
               >
                 Vendas
+              </button>
+              <button
+                type="button"
+                onClick={() => setTelaAtiva('analises')}
+                className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
+                  telaAtiva === 'analises' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:bg-white'
+                }`}
+              >
+                Análises
               </button>
               <button
                 type="button"
@@ -75,6 +85,8 @@ export default function App() {
 
           {telaAtiva === 'vendas' ? (
             <SalesPanel vendas={vendas} onRegistrarVenda={handleRegistrarVenda} />
+          ) : telaAtiva === 'analises' ? (
+            <AnalyticsPanel vendas={vendas} />
           ) : (
             <AiAssistantScreen vendas={vendas} />
           )}

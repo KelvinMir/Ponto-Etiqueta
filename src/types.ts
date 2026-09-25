@@ -16,10 +16,15 @@ export interface Venda {
   id?: string;
   nomeCliente: string;
   clienteId?: string;
+  telefoneCliente?: string;
+  observacoesCliente?: string;
   produto?: string;
   descricaoPeca: string;
   valor: number;
+  subtotalCompra?: number;
   valorTotalCompra?: number;
+  aplicarDesconto?: boolean;
+  percentualDesconto?: number;
   valorRecebido?: number;
   valorAindaPagar?: number;
   precoVenda?: number;
@@ -28,7 +33,7 @@ export interface Venda {
   quantidadeVendida?: number;
   quantidadePecas?: number;
   pecas?: string[];
-  itens?: Array<{ descricao: string; quantidade: number }>;
+  itens?: Array<{ descricao: string; quantidade: number; valor?: number }>;
   lucroCalculado?: number;
   formaPagamento: FormaPagamento;
   quantidadeParcelas: number;

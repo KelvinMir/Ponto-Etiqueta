@@ -4,8 +4,6 @@ import { type Cliente, type Venda } from "./types";
 
 const vendasCollection = collection(db, "compras");
 const clientesCollection = collection(db, "clientes");
-const OPERACAO_TIMEOUT_MS = 15000;
-
 const executarOperacao = async <T>(
   nome: string,
   payload: unknown,
@@ -18,15 +16,7 @@ const executarOperacao = async <T>(
   console.groupEnd();
 
   try {
-    const resposta = await Promise.race([
-      operacao(),
-      new Promise<never>((_, reject) => {
-        window.setTimeout(
-          () => reject(new Error(`A operação ${nome} não recebeu resposta em ${OPERACAO_TIMEOUT_MS / 1000}s.`)),
-          OPERACAO_TIMEOUT_MS
-        );
-      }),
-    ]);
+    const resposta = await operacao();
     console.groupCollapsed(`[Firestore] ${id} ← OK (${Math.round(performance.now() - inicio)}ms)`);
     console.log("resposta:", resposta ?? "ACK recebido (sem corpo de resposta)");
     console.groupEnd();
@@ -130,15 +120,6 @@ export const excluirCliente = async (clienteId: string) => {
 export const registrarCompra = async (venda: Omit<Venda, "id" | "dataRegistro">) => {
   try {
     const clienteId = venda.clienteId || normalizarIdCliente(venda.nomeCliente);
-    const clienteRef = doc(clientesCollection, clienteId);
-
-    const clientePayload = {
-      nome: venda.nomeCliente.trim(),
-      atualizadoEm: Timestamp.now(),
-    };
-    await executarOperacao("salvarClienteDaCompra", clientePayload, () =>
-      setDoc(clienteRef, clientePayload, { merge: true })
-    );
 
     const payload = {
       ...venda,
